@@ -1,0 +1,27 @@
+[setup]: Starting the installer
+[setup]: Elevating access rights, if necessary please type in your password
+[setup]: (Downloading) build-essential
+[setup]: (Downloading) git
+[setup]: (Downloading) gcc
+[setup]: (Downloading) g++
+[setup]: (Downloading) cmake
+[setup]: (Downloading) make
+[setup]: (Installing) redis
+--> [setup]: (Executing) curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
+--> [setup]: (Executing) echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
+--> [setup]: (Executing) sudo apt-get update
+--> [setup]: (Downloading) redis
+--> [setup]: (Downloading) redis-server
+[setup]: (Installing) Modular
+--> [setup]: (Executing) curl https://get.modular.com | MODULAR_AUTH=mut_55c07900b0634760a280ce48dcdb3262 sh -
+--> [setup]: (Executing) modular install mojo
+--> [setup]: (Modifying) ~/.bashrc
+--> --> [setup]: (Appended) export MODULAR_HOME="$HOME/.modular"
+--> --> [setup]: (Appended) export PATH="$MODULAR_HOME/pkg/packages.modular.com_mojo/bin:$PATH"
+--> [setup]: (Executing) source ~/.bashrc
+[setup]: (Downloading) rabbitmq-server
+[setup]: (Executing) sudo apt-get update
+[setup]: (Executing) sudo apt-get upgrade
+
+
+[setup]: Finished installing!
