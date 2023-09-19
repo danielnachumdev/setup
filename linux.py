@@ -447,7 +447,8 @@ EXECUTABLES: list[Executable] = [
             LOGGER.log, "(NOTICE) Installing Anaconda3 takes a long time"),
         TerminalCommand(
             'wget https://repo.anaconda.com/archive/Anaconda3-2023.07-2-Linux-x86_64.sh'),
-        TerminalCommand('bash Anaconda3-2023.07-2-Linux-x86_64.sh')
+        TerminalCommand('bash Anaconda3-2023.07-2-Linux-x86_64.sh'),
+        TerminalCommand('conda update conda')
     ]),
 ]
 
