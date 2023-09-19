@@ -4,6 +4,7 @@ import functools
 import subprocess
 import os
 import sys
+from enum import Enum
 from threading import Semaphore, Lock, Thread
 from abc import ABC, abstractmethod
 from typing import IO, Generator, Tuple, Union, Iterable, Any
@@ -11,36 +12,29 @@ from pathlib import Path
 DEBUG: bool = True
 
 
-class IndentedWriter:
-    LOG_PREFIX = "[setup]: "
-
-    def __init__(self, streams: list[IO[str]] = [sys.stdout], indent: str = '--> ') -> None:
-        self._streams = streams
-        self._indent = indent
-        self._amount: int = 0
-
-    def indent(self) -> None:
-        self._amount += 1
-
-    def undent(self) -> None:
-        self._amount = max(self._amount-1, 0)
-
-    def _write(self, msg) -> None:
-        for stream in self._streams:
-            stream.write(msg)
-
-    def log(self, *args, sep: str = ' ', end: str = '\n') -> None:
-        msg = self._indent * self._amount + \
-            IndentedWriter.LOG_PREFIX + sep.join(args)+end
-        self._write(msg)
-
-    def print(self, *args, sep: str = ' ', end: str = '\n'):
-        msg = self._indent * self._amount+sep.join(args)+end
-        self._write(msg)
+class OSType(Enum):
+    """enum result for possible results of get_os()
+    """
+    LINUX = "Linux"
+    WINDOWS = "Windows"
+    OSX = "OS X"
+    UNKNOWN = "Unknown"
 
 
-log_file = open('./logfile.txt', 'w', encoding='utf8')
-LOGGER = IndentedWriter([sys.stdout, log_file])
+def get_os() -> OSType:
+    """returns the type of operation system running this code
+
+    Returns:
+        OSType: enum result
+    """
+    p = sys.platform
+    if p in {"linux", "linux2"}:
+        return OSType.LINUX
+    if p == "darwin":
+        return OSType.OSX
+    if p == "win32":
+        return OSType.WINDOWS
+    return OSType.UNKNOWN
 
 
 def generator_from_stream(stream: Union[IO, Iterable[Any]]) -> Generator[Any, None, None]:
@@ -73,6 +67,128 @@ def atomic(func):
         with lock:
             return func(*args, **kwargs)
     return wrapper
+
+
+def threadify(func):
+    """will modify the function that when calling it a new thread
+    will start to run it with provided arguments.\nnote that no return value will be given
+
+    Args:
+        func (Callable): the function to make a thread
+
+    Returns:
+        Callable: the modified function
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        Thread(target=func, args=args, kwargs=kwargs).start()
+    return wrapper
+
+
+def join_generators(*generators) -> Generator[Tuple[int, Any], None, None]:
+    """will join generators to yield from all of them simultaneously 
+    without busy waiting, using semaphores and multithreading 
+
+    Yields:
+        Generator[Any, None, None]: one generator that combines all of the given ones
+    """
+    queue = Queue()
+    edit_queue_semaphore = Semaphore(1)
+    queue_status_semaphore = Semaphore(0)
+    finished_threads_counter = AtomicCounter()
+
+    @threadify
+    def thread_entry_point(index: int, generator: Generator) -> None:
+        for value in generator:
+            with edit_queue_semaphore:
+                queue.push((index, value))
+            queue_status_semaphore.release()
+        finished_threads_counter.increment()
+
+        if finished_threads_counter.get() == len(generators):
+            # re-release the lock once from the last thread because it
+            # gets stuck in the main loop after the generation has stopped
+            queue_status_semaphore.release()
+
+    for i, generator in enumerate(generators):
+        thread_entry_point(i, generator)
+
+    while finished_threads_counter.get() < len(generators):
+        queue_status_semaphore.acquire()
+        with edit_queue_semaphore:
+            # needed for the very last iteration of the "while" loop. see above comment
+            if not queue.is_empty():
+                yield queue.pop()
+    with edit_queue_semaphore:
+        for value in queue:
+            yield value
+
+
+def cmrt(*args, shell: bool = True) -> Generator[Tuple[int, bytes], None, None]:
+    """Executes a command and yields stdout and stderr in real-time.
+
+    Args:
+        shell (bool, optional): If True, the command is executed through the shell. Defaults to True.
+
+    Raises:
+        TypeError: if 'shell' is not boolean
+
+    Yields:
+        Generator[tuple[int, bytes], None, None]: the tuple yielded will contain the 'stream identifier'
+            0 - stdout,
+            1 - stderr
+        and the actual value from the stream
+    """
+    if not isinstance(shell, bool):
+        raise TypeError("The 'shell' parameter must be of type bool.")
+
+    # Quote the arguments that represent file or directory paths.
+    for i, arg in enumerate(args):
+        path_obj = Path(args[i])
+        if path_obj.is_file() or path_obj.is_dir():
+            args = (*args[:i], f"\"{arg}\"", *args[i+1:])
+
+    # Join the arguments into a command string and execute the command.
+    cmd = " ".join(args)
+
+    with subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        combined = join_generators(
+            generator_from_stream(process.stdout),  # type:ignore
+            generator_from_stream(process.stderr)  # type:ignore
+        )
+        for tup in combined:
+            yield tup
+
+
+class IndentedWriter:
+    LOG_PREFIX = "[setup]: "
+
+    def __init__(self, streams: list[IO[str]] = [sys.stdout], indent: str = '--> ') -> None:
+        self._streams = streams
+        self._indent = indent
+        self._amount: int = 0
+
+    def indent(self) -> None:
+        self._amount += 1
+
+    def undent(self) -> None:
+        self._amount = max(self._amount-1, 0)
+
+    def _write(self, msg) -> None:
+        for stream in self._streams:
+            stream.write(msg)
+
+    def log(self, *args, sep: str = ' ', end: str = '\n') -> None:
+        msg = self._indent * self._amount + \
+            IndentedWriter.LOG_PREFIX + sep.join(args)+end
+        self._write(msg)
+
+    def print(self, *args, sep: str = ' ', end: str = '\n'):
+        msg = self._indent * self._amount+sep.join(args)+end
+        self._write(msg)
+
+
+LOGGER = IndentedWriter()
 
 
 class Queue:
@@ -175,97 +291,6 @@ class AtomicCounter:
         self.value = value
 
 
-def threadify(func):
-    """will modify the function that when calling it a new thread
-    will start to run it with provided arguments.\nnote that no return value will be given
-
-    Args:
-        func (Callable): the function to make a thread
-
-    Returns:
-        Callable: the modified function
-    """
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        Thread(target=func, args=args, kwargs=kwargs).start()
-    return wrapper
-
-
-def join_generators(*generators) -> Generator[Tuple[int, Any], None, None]:
-    """will join generators to yield from all of them simultaneously 
-    without busy waiting, using semaphores and multithreading 
-
-    Yields:
-        Generator[Any, None, None]: one generator that combines all of the given ones
-    """
-    queue = Queue()
-    edit_queue_semaphore = Semaphore(1)
-    queue_status_semaphore = Semaphore(0)
-    finished_threads_counter = AtomicCounter()
-
-    @threadify
-    def thread_entry_point(index: int, generator: Generator) -> None:
-        for value in generator:
-            with edit_queue_semaphore:
-                queue.push((index, value))
-            queue_status_semaphore.release()
-        finished_threads_counter.increment()
-
-        if finished_threads_counter.get() == len(generators):
-            # re-release the lock once from the last thread because it
-            # gets stuck in the main loop after the generation has stopped
-            queue_status_semaphore.release()
-
-    for i, generator in enumerate(generators):
-        thread_entry_point(i, generator)
-
-    while finished_threads_counter.get() < len(generators):
-        queue_status_semaphore.acquire()
-        with edit_queue_semaphore:
-            # needed for the very last iteration of the "while" loop. see above comment
-            if not queue.is_empty():
-                yield queue.pop()
-    with edit_queue_semaphore:
-        for value in queue:
-            yield value
-
-
-def cmrt(*args, shell: bool = True) -> Generator[Tuple[int, bytes], None, None]:
-    """Executes a command and yields stdout and stderr in real-time.
-
-    Args:
-        shell (bool, optional): If True, the command is executed through the shell. Defaults to True.
-
-    Raises:
-        TypeError: if 'shell' is not boolean
-
-    Yields:
-        Generator[tuple[int, bytes], None, None]: the tuple yielded will contain the 'stream identifier'
-            0 - stdout,
-            1 - stderr
-        and the actual value from the stream
-    """
-    if not isinstance(shell, bool):
-        raise TypeError("The 'shell' parameter must be of type bool.")
-
-    # Quote the arguments that represent file or directory paths.
-    for i, arg in enumerate(args):
-        path_obj = Path(args[i])
-        if path_obj.is_file() or path_obj.is_dir():
-            args = (*args[:i], f"\"{arg}\"", *args[i+1:])
-
-    # Join the arguments into a command string and execute the command.
-    cmd = " ".join(args)
-
-    with subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
-        combined = join_generators(
-            generator_from_stream(process.stdout),  # type:ignore
-            generator_from_stream(process.stderr)  # type:ignore
-        )
-        for tup in combined:
-            yield tup
-
-
 class Exmplainable(ABC):
     @abstractmethod
     def explain(self) -> None: ...
@@ -276,7 +301,7 @@ class Executable(Exmplainable):
     def execute(self) -> None: ...
 
     def explain(self) -> None:
-        LOGGER.log(f"Executing {self}")
+        LOGGER.log(f"(Executing) {self}")
 
 
 class Installable(Executable):
@@ -378,8 +403,26 @@ class InstallTarget(Installable):
         LOGGER.log(f"(Installing) {self._display_name}")
 
 
+class WriteMessage(Executable):
+    def __init__(self, writing_func, msg: str) -> None:
+        self._msg = msg
+        self._writing_func = writing_func
+
+    def execute(self) -> None:
+        self._writing_func(self._msg)
+
+    def explain(self) -> None:
+        pass
+
+
 def main():
+    dct = globals()
+
     LOGGER.log('Starting the installer')
+    if get_os() != OSType.LINUX:
+        LOGGER.log("This script should only be run on linux. exiting...")
+        exit(1)
+
     LOGGER.log(
         "Elevating access rights, if necessary please type in your password")
     is_elevated: bool = False
@@ -418,6 +461,13 @@ def main():
             TerminalCommand('source ~/.bashrc')
         ]),
         AptTarget('rabbitmq-server'),
+        InstallTarget("Anaconda3", [
+            WriteMessage(
+                LOGGER.log, "(NOTICE) Installing Anaconda3 takes a long time"),
+            TerminalCommand(
+                'wget https://repo.anaconda.com/archive/Anaconda3-2023.07-2-Linux-x86_64.sh'),
+            TerminalCommand('bash Anaconda3-2023.07-2-Linux-x86_64.sh')
+        ]),
         TerminalCommand('sudo apt-get update'),
         TerminalCommand('sudo apt-get upgrade')
     ]
@@ -432,4 +482,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-log_file.close()
