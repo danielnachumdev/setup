@@ -388,13 +388,13 @@ class FileAppender(Executable):
 
 
 class InstallTarget(Installable):
-    def __init__(self, display_name: str, cmds: list[Executable]) -> None:
+    def __init__(self, display_name: str, executables: list[Executable]) -> None:
         self._display_name = display_name
-        self._cmds = cmds
+        self._executables = executables
 
     def install(self) -> None:
         LOGGER.indent()
-        for cmd in self._cmds:
+        for cmd in self._executables:
             cmd.explain()
             cmd.execute()
         LOGGER.undent()
@@ -415,9 +415,44 @@ class WriteMessage(Executable):
         pass
 
 
-def main():
-    dct = globals()
+EXECUTABLES: list[Executable] = [
+    TerminalCommand('sudo apt-get update'),
+    TerminalCommand('sudo apt-get upgrade'),
+    AptTarget('build-essential'),
+    AptTarget('git'),
+    AptTarget('gcc'),
+    AptTarget('g++'),
+    AptTarget('cmake'),
+    AptTarget('make'),
+    InstallTarget("redis", [
+        TerminalCommand(
+            'curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg'),
+        TerminalCommand(
+            'echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list'),
+        TerminalCommand('sudo apt-get update'),
+        AptTarget('redis'),
+        AptTarget('redis-server')
+    ]),
+    InstallTarget("Modular", [
+        TerminalCommand(
+            'curl https://get.modular.com | MODULAR_AUTH=mut_55c07900b0634760a280ce48dcdb3262 sh -'),
+        TerminalCommand('modular install mojo'),
+        FileAppender(
+            '~/.bashrc', ['export MODULAR_HOME="$HOME/.modular"', 'export PATH="$MODULAR_HOME/pkg/packages.modular.com_mojo/bin:$PATH"']),
+        TerminalCommand('source ~/.bashrc')
+    ]),
+    AptTarget('rabbitmq-server'),
+    InstallTarget("Anaconda3", [
+        WriteMessage(
+            LOGGER.log, "(NOTICE) Installing Anaconda3 takes a long time"),
+        TerminalCommand(
+            'wget https://repo.anaconda.com/archive/Anaconda3-2023.07-2-Linux-x86_64.sh'),
+        TerminalCommand('bash Anaconda3-2023.07-2-Linux-x86_64.sh')
+    ]),
+]
 
+
+def main():
     LOGGER.log('Starting the installer')
     if get_os() != OSType.LINUX:
         LOGGER.log("This script should only be run on linux. exiting...")
@@ -436,43 +471,7 @@ def main():
         LOGGER.print("Failed to elevate privilages, try again")
         exit(1)
 
-    executables: list[Executable] = [
-        AptTarget('build-essential'),
-        AptTarget('git'),
-        AptTarget('gcc'),
-        AptTarget('g++'),
-        AptTarget('cmake'),
-        AptTarget('make'),
-        InstallTarget("redis", [
-            TerminalCommand(
-                'curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg'),
-            TerminalCommand(
-                'echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list'),
-            TerminalCommand('sudo apt-get update'),
-            AptTarget('redis'),
-            AptTarget('redis-server')
-        ]),
-        InstallTarget("Modular", [
-            TerminalCommand(
-                'curl https://get.modular.com | MODULAR_AUTH=mut_55c07900b0634760a280ce48dcdb3262 sh -'),
-            TerminalCommand('modular install mojo'),
-            FileAppender(
-                '~/.bashrc', ['export MODULAR_HOME="$HOME/.modular"', 'export PATH="$MODULAR_HOME/pkg/packages.modular.com_mojo/bin:$PATH"']),
-            TerminalCommand('source ~/.bashrc')
-        ]),
-        AptTarget('rabbitmq-server'),
-        InstallTarget("Anaconda3", [
-            WriteMessage(
-                LOGGER.log, "(NOTICE) Installing Anaconda3 takes a long time"),
-            TerminalCommand(
-                'wget https://repo.anaconda.com/archive/Anaconda3-2023.07-2-Linux-x86_64.sh'),
-            TerminalCommand('bash Anaconda3-2023.07-2-Linux-x86_64.sh')
-        ]),
-        TerminalCommand('sudo apt-get update'),
-        TerminalCommand('sudo apt-get upgrade')
-    ]
-
-    for executable in executables:
+    for executable in EXECUTABLES:
         executable.explain()
         executable.execute()
     LOGGER.print()
